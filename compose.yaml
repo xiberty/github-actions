@@ -1,0 +1,35 @@
+name: xiberty-github-runner
+
+services:
+  runner:
+    image: myoung34/github-runner:2.338.2-ubuntu-noble
+    restart: unless-stopped
+    privileged: true
+    environment:
+      RUNNER_SCOPE: org
+      ORG_NAME: xiberty
+      RUNNER_NAME: mac-mini-docker
+      LABELS: mac-mini
+      RUNNER_TOKEN: ${RUNNER_TOKEN:-}
+      RUNNER_WORKDIR: /runner-work
+      CONFIGURED_ACTIONS_RUNNER_FILES_DIR: /runner-state
+      DISABLE_AUTOMATIC_DEREGISTRATION: "true"
+      START_DOCKER_SERVICE: "true"
+      UNSET_CONFIG_VARS: "true"
+    volumes:
+      - runner-state:/runner-state
+      - runner-work:/runner-work
+      - runner-docker:/var/lib/docker
+    healthcheck:
+      test: ["CMD-SHELL", "docker info >/dev/null 2>&1"]
+      interval: 20s
+      timeout: 10s
+      retries: 6
+      start_period: 45s
+
+volumes:
+  # runner.sh comprueba este nombre antes de arrancar sin token.
+  runner-state:
+    name: xiberty-gh-runner-state
+  runner-work:
+  runner-docker:

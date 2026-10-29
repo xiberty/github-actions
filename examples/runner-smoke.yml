@@ -1,0 +1,59 @@
+name: Self-hosted runner smoke
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/runner-smoke.yml
+
+permissions:
+  contents: read
+
+jobs:
+  docker:
+    runs-on: [self-hosted, linux, mac-mini]
+    timeout-minutes: 10
+    steps:
+      - name: Check Linux and the internal Docker engine
+        run: |
+          uname -m
+          docker version
+          docker info --format 'Server={{.ServerVersion}} OS={{.OSType}} Arch={{.Architecture}}'
+
+  containers:
+    needs: docker
+    runs-on: [self-hosted, linux, mac-mini]
+    timeout-minutes: 10
+    container:
+      image: python:3.13-slim
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_DB: runner_smoke
+          # Credencial de prueba efímera; no corresponde a ninguna base real.
+          POSTGRES_PASSWORD: runner-smoke-test-only
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: valkey/valkey:8
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Exercise a JavaScript action inside the job container
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check service DNS and connectivity
+        run: |
+          python - <<'PY'
+          import socket
+          for host, port in (("postgres", 5432), ("redis", 6379)):
+              with socket.create_connection((host, port), timeout=10):
+                  print(f"{host}:{port} OK")
+          PY
