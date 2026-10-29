@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Limpieza diaria de los runners Idle. Ver "Disco y caché" en README.md. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.xiberty.github-runner-prune</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/vic/Projects/xiberty/github-actions/runner.sh</string>
+    <string>prune</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>RUNNER_COUNT</key>
+    <string>2</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>4</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/tmp/xiberty-github-runner-prune.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/xiberty-github-runner-prune.log</string>
+</dict>
+</plist>
