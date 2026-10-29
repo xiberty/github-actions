@@ -33,9 +33,37 @@ arranca Docker Desktop o una VM por su cuenta.
    los que ya tienen registro. Después arranca los contenedores permanentes sin el
    token de alta en su entorno. No necesita un PAT permanente: reutiliza las
    credenciales de los volúmenes de estado en los siguientes arranques.
-4. En GitHub deben aparecer **mac-mini-docker** y **mac-mini-docker-2**, con las
-   etiquetas `self-hosted`, `linux`, `mac-mini` y la arquitectura real. Comprueba
-   que el grupo **Default** autorice los repositorios que quieras usar.
+4. En GitHub deben aparecer **mac-mini-docker** y **mac-mini-docker-2** dentro del
+   grupo **hosted**, con las etiquetas `self-hosted`, `linux`, `mac-mini` y la
+   arquitectura real. Consulta [Grupo de runners](#grupo-de-runners).
+
+## Grupo de runners
+
+Los runners se registran en el grupo `hosted` de la organización (`RUNNER_GROUP`
+en `compose.yaml`). El grupo tiene que existir antes de ejecutar `init`: si no
+existe, el alta falla y no se arranca ningún runner.
+
+En `xiberty > Settings > Actions > Runner groups > hosted` configura:
+
+- **Repository access**: los repositorios que pueden usar estos runners. Deja sólo
+  repositorios privados de confianza, porque los contenedores son `privileged`.
+- **Workflow access**, si quieres limitar también qué workflows pueden usarlo.
+
+El grupo sólo se aplica al registrar. Un runner que ya estaba registrado en
+**Default**, como el `mac-mini-docker` original, no se mueve solo. Muévelo en
+`Settings > Actions > Runners`: entra en el runner y elige **Move to group >
+hosted**. No hace falta reiniciarlo ni volver a registrarlo. Con la API, un admin
+de la organización puede hacer lo mismo con
+`PUT /orgs/xiberty/actions/runner-groups/{group_id}/runners/{runner_id}`.
+
+Las etiquetas siguen bastando para elegir los runners. Si además quieres exigir el
+grupo desde el workflow:
+
+```yaml
+runs-on:
+  group: hosted
+  labels: [self-hosted, linux, mac-mini]
+```
 
 ## Número de runners
 
@@ -214,8 +242,8 @@ de cada volumen. Para el detalle de un runner, ejecuta dentro de él
 `docker compose -p xiberty-github-runner-2 --env-file /dev/null exec runner docker system df`.
 
 Cada contenedor usa `privileged` para ejecutar su Docker interno. Dedícalos a
-repositorios privados de confianza y limita qué repositorios tienen acceso al
-grupo. No se publica ningún puerto hacia la Mac ni se monta el socket Docker del
+repositorios privados de confianza y limita qué repositorios tienen acceso al grupo `hosted`.
+No se publica ningún puerto hacia la Mac ni se monta el socket Docker del
 anfitrión dentro del runner.
 
 ## Validación del paquete

@@ -9,6 +9,7 @@ services:
     environment:
       RUNNER_SCOPE: org
       ORG_NAME: xiberty
+      RUNNER_GROUP: hosted
       RUNNER_NAME: ${RUNNER_NAME:-mac-mini-docker}
       LABELS: mac-mini
       RUNNER_TOKEN: ${RUNNER_TOKEN:-}
