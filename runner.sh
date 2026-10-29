@@ -4,7 +4,7 @@ set -Eeuo pipefail
 package_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly package_dir
 readonly compose_file="${package_dir}/compose.yaml"
-readonly state_volume='xiberty-gh-runner-state'
+readonly runner_count="${RUNNER_COUNT:-2}"
 bootstrap_token="${RUNNER_TOKEN:-}"
 unset RUNNER_TOKEN
 
@@ -17,17 +17,19 @@ trap 'unset RUNNER_TOKEN bootstrap_token' EXIT
 
 usage() {
   cat <<'USAGE'
-Uso: ./runner.sh <comando>
+Uso: [RUNNER_COUNT=<n>] ./runner.sh <comando>
 
-  init     Registrar una vez con un token temporal y arrancar en segundo plano.
-  up       Arrancar usando el registro guardado; no pide token.
-  status   Mostrar estado y salud del contenedor.
-  logs     Seguir los logs; Ctrl+C sólo cierra el visor.
-  stop     Detener el runner conservando sus datos.
-  restart  Reiniciar el runner y esperar a su Docker interno.
-  check    Validar el archivo Compose sin arrancar el runner.
+  init     Registrar los runners que falten con un token temporal y arrancarlos.
+  up       Arrancar usando los registros guardados; no pide token.
+  status   Mostrar estado y salud de cada contenedor.
+  logs     Seguir los logs de todos; Ctrl+C sólo cierra el visor.
+  stop     Detener los runners conservando sus datos.
+  restart  Reiniciar los runners y esperar a su Docker interno.
+  prune    Borrar imágenes y caché sin uso de los runners que estén Idle.
+  check    Validar el archivo Compose sin arrancar ningún runner.
 
-Antes de stop o restart, espera a que GitHub muestre el runner como Idle.
+RUNNER_COUNT indica cuántos runners se gestionan (1-9, por defecto 2).
+Antes de stop o restart, espera a que GitHub muestre los runners como Idle.
 USAGE
 }
 
@@ -36,9 +38,20 @@ die() {
   exit "${2:-1}"
 }
 
+# El runner 1 conserva los nombres originales para reutilizar su registro.
+select_runner() {
+  local suffix=''
+  if (( $1 > 1 )); then
+    suffix="-$1"
+  fi
+  runner_project="xiberty-github-runner${suffix}"
+  export RUNNER_NAME="mac-mini-docker${suffix}"
+  export RUNNER_STATE_VOLUME="xiberty-gh-runner${suffix}-state"
+}
+
 compose() {
-  docker compose --project-directory "$package_dir" --env-file /dev/null \
-    -f "$compose_file" "$@"
+  docker compose --project-directory "$package_dir" --project-name "$runner_project" \
+    --env-file /dev/null -f "$compose_file" "$@"
 }
 
 require_compose() {
@@ -65,14 +78,14 @@ ensure_image() {
 is_registered() {
   local volume_names probe_status=0
   volume_names="$(docker volume ls --format '{{.Name}}')" || die 'No se pudo consultar los volúmenes de Docker.'
-  if ! grep -Fx "$state_volume" <<< "$volume_names" >/dev/null; then
+  if ! grep -Fx "$RUNNER_STATE_VOLUME" <<< "$volume_names" >/dev/null; then
     return 1
   fi
 
   # Sólo comprueba que existe el registro: no lee ni imprime las credenciales.
   docker run --rm --network none --read-only --cap-drop ALL \
     --security-opt no-new-privileges \
-    --mount "type=volume,src=${state_volume},dst=/state,readonly" \
+    --mount "type=volume,src=${RUNNER_STATE_VOLUME},dst=/state,readonly" \
     --entrypoint /bin/sh "$image_name" -c 'test -s /state/.runner' || probe_status=$?
   case "$probe_status" in
     0) return 0 ;;
@@ -81,38 +94,113 @@ is_registered() {
   esac
 }
 
-start_runner() {
-  compose up -d --wait --wait-timeout 180 runner
-  printf '\nRunner arrancado. Comprueba que figure Idle en GitHub.\n'
-  compose ps runner
+require_registrations() {
+  local index
+  for ((index = 1; index <= runner_count; index++)); do
+    select_runner "$index"
+    is_registered || die "No existe un registro guardado para ${RUNNER_NAME}. Ejecuta ./runner.sh init."
+  done
 }
 
-initialize_runner() {
+start_runners() {
+  local index
+  for ((index = 1; index <= runner_count; index++)); do
+    select_runner "$index"
+    compose up -d --wait --wait-timeout 180 runner
+  done
+  printf '\nRunners arrancados. Comprueba que figuren Idle en GitHub.\n'
+  show_status
+}
+
+show_status() {
+  local index
+  for ((index = 1; index <= runner_count; index++)); do
+    select_runner "$index"
+    printf '\n%s\n' "$RUNNER_NAME"
+    compose ps runner
+  done
+}
+
+read_token() {
+  [[ -z "$bootstrap_token" ]] || return 0
+  printf 'Genera un token nuevo en xiberty > Settings > Actions > Runners.\n'
+  printf 'Sirve para todos los runners pendientes mientras no caduque.\n'
+  if ! IFS= read -r -s -p 'Token temporal de registro: ' bootstrap_token </dev/tty; then
+    die 'Ejecuta init desde una terminal, o proporciona RUNNER_TOKEN en su entorno.'
+  fi
+  printf '\n'
+}
+
+initialize_runners() {
+  local index
+  select_runner 1
   ensure_image
-  if is_registered; then
-    printf 'Ya existe un registro guardado; se reutilizará sin pedir token.\n'
-    start_runner
-    return
-  fi
-
-  if [[ -z "$bootstrap_token" ]]; then
-    printf 'Genera un token nuevo en xiberty > Settings > Actions > Runners.\n'
-    if ! IFS= read -r -s -p 'Token temporal de registro: ' bootstrap_token </dev/tty; then
-      die 'Ejecuta init desde una terminal, o proporciona RUNNER_TOKEN en su entorno.'
+  for ((index = 1; index <= runner_count; index++)); do
+    select_runner "$index"
+    if is_registered; then
+      printf '%s ya está registrado; se reutilizará sin pedir token.\n' "$RUNNER_NAME"
+      continue
     fi
-    printf '\n'
+
+    read_token
+    [[ -n "$bootstrap_token" && "$bootstrap_token" != *[[:space:]]* ]] \
+      || die 'El token está vacío o contiene espacios/saltos de línea.'
+
+    # El token sólo llega a este contenedor de alta, que se elimina al terminar.
+    # El entrypoint de la imagen registra y guarda las credenciales antes de /bin/true.
+    printf 'Registrando %s...\n' "$RUNNER_NAME"
+    export RUNNER_TOKEN="$bootstrap_token"
+    compose run --rm --no-deps -T -e START_DOCKER_SERVICE=false runner /bin/true
+    unset RUNNER_TOKEN
+
+    is_registered || die "El alta de ${RUNNER_NAME} no dejó un registro válido. Consulta el error anterior."
+  done
+  unset bootstrap_token
+  start_runners
+}
+
+follow_logs() {
+  local index
+  for ((index = 1; index <= runner_count; index++)); do
+    select_runner "$index"
+    compose logs --tail 100 --follow --no-log-prefix runner 2>&1 \
+      | awk -v prefix="[${RUNNER_NAME}] " '{ print prefix $0; fflush() }' &
+  done
+  # Los procesos en segundo plano ignoran Ctrl+C: se cierran desde aquí.
+  trap 'pkill -P "$$" 2>/dev/null || true' INT TERM
+  wait || wait || true
+}
+
+# Sólo limpia runners sin job en curso: Runner.Worker existe mientras corre un job.
+prune_runner() {
+  local worker_status=0
+  if [[ -z "$(compose ps --status running --quiet runner)" ]]; then
+    printf '%s: detenido, se omite.\n' "$RUNNER_NAME"
+    return 0
   fi
-  [[ -n "$bootstrap_token" && "$bootstrap_token" != *[[:space:]]* ]] \
-    || die 'El token está vacío o contiene espacios/saltos de línea.'
+  compose exec -T runner pgrep -f Runner.Worker >/dev/null || worker_status=$?
+  case "$worker_status" in
+    0) printf '%s: ejecutando un job, se omite.\n' "$RUNNER_NAME"; return 0 ;;
+    1) ;;
+    *) die "No se pudo comprobar si ${RUNNER_NAME} está ejecutando un job." ;;
+  esac
 
-  # El token sólo llega a este contenedor de alta, que se elimina al terminar.
-  # El entrypoint de la imagen registra y guarda las credenciales antes de /bin/true.
-  export RUNNER_TOKEN="$bootstrap_token"
-  compose run --rm --no-deps -T -e START_DOCKER_SERVICE=false runner /bin/true
-  unset RUNNER_TOKEN bootstrap_token
+  printf '%s: limpiando el Docker interno...\n' "$RUNNER_NAME"
+  compose exec -T runner sh -c '
+    docker container prune --force >/dev/null &&
+    docker image prune --all --force &&
+    docker network prune --force >/dev/null &&
+    docker volume prune --force &&
+    docker builder prune --all --force --filter until=168h &&
+    docker system df'
+}
 
-  is_registered || die 'El alta no dejó un registro válido. Consulta el error anterior.'
-  start_runner
+prune_runners() {
+  local index
+  for ((index = 1; index <= runner_count; index++)); do
+    select_runner "$index"
+    prune_runner
+  done
 }
 
 command_name="${1:-help}"
@@ -123,12 +211,15 @@ case "$command_name" in
     usage
     exit 0
     ;;
-  init|up|status|logs|stop|restart|check) ;;
+  init|up|status|logs|stop|restart|prune|check) ;;
   *) usage >&2; die "Comando desconocido: ${command_name}" 2 ;;
 esac
 
+[[ "$runner_count" =~ ^[1-9]$ ]] || die 'RUNNER_COUNT debe ser un número entre 1 y 9.' 2
+
 require_compose
 if [[ "$command_name" == 'check' ]]; then
+  select_runner 1
   compose config --quiet
   printf 'Compose válido. No se ha arrancado ni registrado ningún runner.\n'
   exit 0
@@ -136,16 +227,26 @@ fi
 
 require_daemon
 case "$command_name" in
-  init) initialize_runner ;;
+  init) initialize_runners ;;
   up|restart)
+    select_runner 1
     ensure_image
-    is_registered || die 'No existe un registro guardado. Ejecuta ./runner.sh init.'
+    require_registrations
     if [[ "$command_name" == 'restart' ]]; then
-      compose restart runner
+      for ((index = 1; index <= runner_count; index++)); do
+        select_runner "$index"
+        compose restart runner
+      done
     fi
-    start_runner
+    start_runners
     ;;
-  status) compose ps runner ;;
-  logs) compose logs --tail 100 --follow runner ;;
-  stop) compose stop runner ;;
+  status) show_status ;;
+  logs) follow_logs ;;
+  stop)
+    for ((index = 1; index <= runner_count; index++)); do
+      select_runner "$index"
+      compose stop runner
+    done
+    ;;
+  prune) prune_runners ;;
 esac
